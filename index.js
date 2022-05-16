@@ -1,6 +1,7 @@
 const express = require('express');
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const app = express();
+const jwt = require('jsonwebtoken');
 const cors = require('cors');
 require('dotenv').config();
 const port = process.env.PORT || 5000;
@@ -19,10 +20,31 @@ async function run() {
         client.connect()
         const serviceCollection = client.db('doctors_portal').collection('services');
         const bookingCollection = client.db('doctors_portal').collection('bookings');
+        const userCollection = client.db('doctors_portal').collection('users');
 
+        const verifyJwt = (req, res, next) => {
+            const authorization = req.headers.authorization;
+            if (!authorization) {
+                return res.status(401).send({ message: 'unauthorized' })
+            }
+            const token = authorization.split(' ')[1]
+            jwt.verify(token, process.env.ACCESS_SECRET, (err, decode) => {
+                if (err) {
+                    return res.status(403).send({ message: 'Forbidden' })
+                }
+                req.decode = decode;
+                next()
+            })
+        }
+        //get all services 
         app.get('/service', async (req, res) => {
             const cursor = serviceCollection.find({})
             const result = await cursor.toArray()
+            res.send(result)
+        })
+        //get all users
+        app.get('/user', verifyJwt, async (req, res) => {
+            const result = await userCollection.find().toArray();
             res.send(result)
         })
 
@@ -52,11 +74,55 @@ async function run() {
             res.send(services)
         })
         //get my appointments
-        app.get('/appointments', async (req, res) => {
+        app.get('/appointments', verifyJwt, async (req, res) => {
             const email = req.query.email;
+            const decode = req.decode.email;
             const query = { email }
+            if (!email === decode) {
+                return res.status(403).send({ message: 'Forbidden access' })
+            }
             const result = await bookingCollection.find(query).toArray()
             res.send(result)
+
+        })
+        //store user data to db
+        app.put('/user/:email', async (req, res) => {
+            const email = req.params.email;
+            const user = req.body;
+            const filter = { email }
+            const options = { upsert: true };
+            const updateDoc = {
+                $set: user
+            };
+            const result = await userCollection.updateOne(filter, updateDoc, options);
+            const token = jwt.sign({ email }, process.env.ACCESS_SECRET, { expiresIn: '1h' })
+            res.send({ result, token })
+
+        })
+        //role management
+        app.put('/admin/:email', verifyJwt, async (req, res) => {
+            const email = req.params.email;
+            const requester = req.decode.email;
+            const requesterAccount = userCollection.findOne({ email: requester });
+            if (requesterAccount.role === 'admin') {
+                const filter = { email }
+                const updateDoc = {
+                    $set: { role: 'admin' }
+                };
+                const result = await userCollection.updateOne(filter, updateDoc);
+                res.send(result)
+            } else {
+                res.status(403).send({ message: 'Forbidden' })
+            }
+
+        })
+        //Check admin 
+        app.get('/admin/:email', verifyJwt, async (req, res) => {
+            const email = req.params.email;
+            const account = await userCollection.findOne({ email })
+            const isAdmin = account.role === 'admin';
+            console.log(isAdmin, account, email)
+            res.send({ admin: isAdmin })
         })
 
     }
